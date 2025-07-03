@@ -29,7 +29,8 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.size() # batch size, sequence length, embedding dimension (n_embd)
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        # (B, nh, T, hs)
+        
+        # (B, nh, T, hs): makeing the number of heads in to the batch dimension
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) 
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
