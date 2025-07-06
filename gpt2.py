@@ -29,7 +29,7 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimension (n_embd)
-        qkv = self.c_attn(x)
+        qkv     = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
         
         # (B, nh, T, hs): makeing the number of heads in to the batch dimension
@@ -51,6 +51,8 @@ class MLP(nn.Module):
         super().__init__()
         self.c_fc   = nn.Linear(config.n_embd, 4 * config.n_embd) 
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.gelu   = nn.GELU()
+        
     
     def forward(self, x):
         x = self.c_fc(x)
@@ -177,3 +179,47 @@ class GPT(nn.Module):
 
         return model
     
+# ------------------------------------------------------------
+# Initilalzing from Huggingface gpt2 (124M) model weights
+num_return_sequences = 5
+max_length = 30
+
+model = GPT.from_pretrained('gpt2')
+model.eval()
+# model.to('cuda')
+
+# prefix tokens
+import tiktoken
+enc = tiktoken.get_encoding("gpt2")
+tokens = enc.encode("Hello, I'm a language model") # encode this string and get a list of tokens
+tokens = torch.tensor(tokens, dtype=torch.long) # (8, )
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
+# x = tokens.to('cuda') # idx
+x = tokens # idx
+
+# generate
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+
+while x.size(1) < max_length:
+    # forward the model to get the logits
+    with torch.no_grad():
+        logits = model(x)
+    
+    # logits at the last position
+    logits = logits[:, -1, :] # (B, T, vocab_size)
+    probs = F.softmax(logits, dim=-1) # get the probabilities
+
+    # huggingface default: top-k sampling of 50
+    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (5, 50), (5, 50)
+    ix = torch.multinomial(topk_probs, 1)
+    xcol = torch.gather(topk_indices, -1, ix) # (B, 1) new column
+    x = torch.cat((x, xcol), dim=1) # (B, T+1)
+
+# print the generated text
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded)
+
+
