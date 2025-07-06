@@ -100,7 +100,7 @@ class GPT(nn.Module):
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         # forward the token and position embeddings
@@ -116,7 +116,10 @@ class GPT(nn.Module):
         # sorward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size) -> the tensor we are going to obtain
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1)) # flattening out the 3 dim to 2 dim
+        return logits, loss
 
 
     @classmethod
@@ -180,46 +183,83 @@ class GPT(nn.Module):
         return model
     
 # ------------------------------------------------------------
-# Initilalzing from Huggingface gpt2 (124M) model weights
-num_return_sequences = 5
-max_length = 30
+# attempt to autodetect the device
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#     device = 'mps'
+print(f"using device: {device}")
 
-model = GPT.from_pretrained('gpt2')
-model.eval()
-# model.to('cuda')
+# ------------------------------------------------------------
+# Initilalzing from scratch
 
-# prefix tokens
 import tiktoken
 enc = tiktoken.get_encoding("gpt2")
-tokens = enc.encode("Hello, I'm a language model") # encode this string and get a list of tokens
-tokens = torch.tensor(tokens, dtype=torch.long) # (8, )
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
-# x = tokens.to('cuda') # idx
-x = tokens # idx
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1])
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
 
-# generate
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+# get logits
+model = GPT(GPTConfig())
+model.to(device)
 
-while x.size(1) < max_length:
-    # forward the model to get the logits
-    with torch.no_grad():
-        logits = model(x)
+# optimize
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"step {i}, loss: {loss.item()}")
+
+import sys; sys.exit()
+
+# # ------------------------------------------------------------
+# # Initilalzing from Huggingface gpt2 (124M) model weights
+# num_return_sequences = 5
+# max_length = 30
+
+# model = GPT.from_pretrained('gpt2')
+# model.eval()
+# model.to(device)
+
+# # prefix tokens
+# import tiktoken
+# enc = tiktoken.get_encoding("gpt2")
+# tokens = enc.encode("Hello, I'm a language model") # encode this string and get a list of tokens
+# tokens = torch.tensor(tokens, dtype=torch.long) # (8, )
+# tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
+# x = tokens.to(device) # idx
+
+# # generate
+# torch.manual_seed(42)
+# torch.cuda.manual_seed(42)
+
+# while x.size(1) < max_length:
+#     # forward the model to get the logits
+#     with torch.no_grad():
+#         logits = model(x)
     
-    # logits at the last position
-    logits = logits[:, -1, :] # (B, T, vocab_size)
-    probs = F.softmax(logits, dim=-1) # get the probabilities
+#     # logits at the last position
+#     logits = logits[:, -1, :] # (B, T, vocab_size)
+#     probs = F.softmax(logits, dim=-1) # get the probabilities
 
-    # huggingface default: top-k sampling of 50
-    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (5, 50), (5, 50)
-    ix = torch.multinomial(topk_probs, 1)
-    xcol = torch.gather(topk_indices, -1, ix) # (B, 1) new column
-    x = torch.cat((x, xcol), dim=1) # (B, T+1)
+#     # huggingface default: top-k sampling of 50
+#     topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (5, 50), (5, 50)
+#     ix = torch.multinomial(topk_probs, 1)
+#     xcol = torch.gather(topk_indices, -1, ix) # (B, 1) new column
+#     x = torch.cat((x, xcol), dim=1) # (B, T+1)
 
-# print the generated text
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
+# # print the generated text
+# for i in range(num_return_sequences):
+#     tokens = x[i, :max_length].tolist()
+#     decoded = enc.decode(tokens)
+#     print(">", decoded)
 
 
